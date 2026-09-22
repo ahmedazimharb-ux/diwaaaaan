@@ -855,7 +855,7 @@ function loadDB() {
   freshDB();
 }
 function freshDB() { const st = DB && DB.settings; DB = seedDB(); DB.settings = st || defaultSettings(); DB.notifications = buildNotifications(); audit('Demo data loaded', 'system', '-', 'Sample dataset seeded'); persistNow(); VER++; }
-function persistNow() { try { localStorage.setItem(STORE_KEY, JSON.stringify(DB)); } catch (e) { } }
+function persistNow() { try { localStorage.setItem(STORE_KEY, JSON.stringify(DB)); } catch (e) { } if (window.cloudSave) window.cloudSave(); }
 const persist = debounce(persistNow, 350);
 function clearDB() { const keep = { users: DB.users, settings: DB.settings, campaigns: [] }; DB = { ...seedEmpty(), ...keep }; audit('Deleted', 'system', '-', 'All operational records cleared'); persistNow(); VER++; }
 function seedEmpty() { const o = {}; ['suppliers', 'products', 'companies', 'contacts', 'leads', 'opportunities', 'quotations', 'deals', 'orders', 'shipments', 'activities', 'tasks', 'campaigns', 'documents', 'notifications', 'audit', 'ai'].forEach(k => o[k] = []); return o; }
@@ -1545,12 +1545,12 @@ function loginView() {
   <div class="brand" style="position:relative"><span class="mono">RS</span><div><b>RS Nexus</b><small>${esc(t('subtitle', 'Global Trade CRM & Business Intelligence'))}</small></div></div>
   <h1 style="position:relative">${esc(t('tagline', 'One Operating System for Global Trade.'))}</h1><p style="position:relative">${esc(t('tagline2', 'From Lead to Shipment.'))} — marketing, sales, sourcing, supplier verification and logistics in one intelligent workspace.</p>
   <div class="foot"><span>Import · Export · Sourcing</span><span>Rwanda · Tanzania · Libya · India · Mauritania · China</span><span>Egypt HQ</span></div></div>
-  <div class="r"><div class="box"><div class="row mb"><span class="demo-pill"><i></i>DEMO MODE</span><span class="sp"></span><div class="seg"><button class="${S.lang === 'en' ? 'on' : ''}" data-act="lang" data-l="en">EN</button><button class="${S.lang === 'ar' ? 'on' : ''}" data-act="lang" data-l="ar">ع</button></div></div>
-  <h2>${esc(t('sign_in', 'Sign in'))}</h2><p class="muted" style="margin:4px 0 16px">Prototype authentication. Choose a demo role to see role-based permissions and branch scoping.</p>
+  <div class="r"><div class="box"><div class="row mb">${cloudOn() ? '<span class="badge ok">SHARED DATA</span>' : '<span class="demo-pill"><i></i>DEMO MODE</span>'}<span class="sp"></span><div class="seg"><button class="${S.lang === 'en' ? 'on' : ''}" data-act="lang" data-l="en">EN</button><button class="${S.lang === 'ar' ? 'on' : ''}" data-act="lang" data-l="ar">ع</button></div></div>
+  ${cloudOn() ? cloudLoginHTML() : `<h2>${esc(t('sign_in', 'Sign in'))}</h2><p class="muted" style="margin:4px 0 16px">Prototype authentication. Choose a demo role to see role-based permissions and branch scoping.</p>
   <div class="field mb"><label>Email</label><input class="inp" value="${esc((gUser(sel) || {}).email || '')}" readonly></div>
   <div class="field mb"><label>Demo role</label><div class="role-grid">${LOGIN_ROLES.map(id => { const u = gUser(id); return `<button class="role-opt ${id === sel ? 'on' : ''}" data-act="pickLogin" data-u="${id}"><b>${esc(u.role)}</b><small>${esc(u.name)} · ${esc(u.branch)}</small></button>`; }).join('')}</div></div>
   <button class="btn pri" style="width:100%;justify-content:center;padding:10px" data-act="login">${esc(t('sign_in', 'Sign in'))}${ic('arrow', 'sm')}</button>
-  <p class="xs faint" style="margin-top:14px">All customers, suppliers, leads, prices and revenue shown in this prototype are fictional DEMO / SAMPLE data. Production uses Supabase Auth with row-level security.</p></div></div></div>`;
+  <p class="xs faint" style="margin-top:14px">All customers, suppliers, leads, prices and revenue shown in this prototype are fictional DEMO / SAMPLE data. Production uses Supabase Auth with row-level security.</p>`}</div></div></div>`;
 }
 ACT.pickLogin = el => { S.ui.loginUser = el.dataset.u; render(); };
 ACT.login = () => { S.userId = S.ui.loginUser || 'u1'; savePrefs(); audit('Login', 'auth', S.userId, cur().role); location.hash = '#/dashboard'; S.route = parseHash(); render(true); };
@@ -2170,5 +2170,101 @@ function init() {
   loadDB(); if (!S.userId || !gUser(S.userId)) S.userId = null;
   S.route = parseHash(); render(true);
 }
-init();
+/* ===================== RS Nexus — optional Supabase sync (shared, real-time, multi-user data) =====================
+ * Fill in CLOUD.url and CLOUD.anonKey below (Supabase → Project Settings → API) to turn on a real shared
+ * backend. Leave them blank to keep the current local-only demo mode (localStorage, not shared between visitors).
+ *
+ * What this adds when configured:
+ *  1) ONE shared JSON document (table `rsnexus_state`) holding the whole CRM dataset, kept in sync in real
+ *     time across every browser that has this page open — a genuinely shared, multi-user dataset.
+ *  2) Real sign-in via Supabase Auth (email + password) instead of the demo role picker. A signed-in email
+ *     is matched to a row in DB.users by email so existing roles, branches and permissions keep working;
+ *     an unmatched email is added as a new "SALES" user automatically (an admin can change their role from
+ *     Team settings afterwards).
+ *
+ * Setup (see README.md for full steps):
+ *  1. Create a free project at https://supabase.com
+ *  2. In the SQL editor, run rsnexus-shared-state.sql (creates the table + Row Level Security policies)
+ *  3. Project Settings → API → copy the "Project URL" and the "anon public" key into CLOUD below
+ *  4. Authentication → Providers: make sure Email is enabled. Add teammates under Authentication → Users,
+ *     or let them use "Create account" on the sign-in screen.
+ *  5. Redeploy (git commit + push — Vercel redeploys automatically).
+ *
+ * This is a pragmatic first step toward a real backend: the whole dataset moves as one document, which is
+ * simple and reliable for a small team. rsnexus-schema.sql has the fully normalized, per-table schema this
+ * data model maps to, for a later migration to per-record Supabase queries and fine-grained RLS.
+ */
+const CLOUD = { url: '', anonKey: '' };
+const cloudOn = () => !!(CLOUD.url && CLOUD.anonKey);
+let sb = null, cloudSaving = false, cloudErr = '';
+
+function boot() { if (cloudOn()) cloudBoot(); else init(); }
+
+function loadSupabaseLib() {
+  if (window.supabase) return Promise.resolve(window.supabase);
+  return new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'; s.onload = () => ok(window.supabase); s.onerror = no; document.head.appendChild(s); });
+}
+async function cloudBoot() {
+  const app = document.getElementById('app');
+  app.innerHTML = '<div style="min-height:100vh;display:grid;place-items:center;color:#55657B;font:14px system-ui">Connecting to shared database…</div>';
+  loadPrefs();
+  try {
+    const lib = await loadSupabaseLib();
+    sb = lib.createClient(CLOUD.url, CLOUD.anonKey, { auth: { persistSession: true, autoRefreshToken: true } });
+    await cloudPullOrSeed();
+    cloudSubscribe();
+    sb.auth.onAuthStateChange((event) => { if (event === 'SIGNED_OUT') { S.userId = null; savePrefs(); render(true); } });
+    const { data: { session } } = await sb.auth.getSession();
+    if (session && session.user && session.user.email) matchCloudUser(session.user.email);
+    S.route = parseHash(); render(true);
+  } catch (e) {
+    console.error(e); cloudErr = (e && e.message) || String(e);
+    app.innerHTML = `<div style="min-height:100vh;display:grid;place-items:center;text-align:center;padding:24px;color:#B8321F;font:14px system-ui"><div><b>Could not connect to the shared database.</b><br>Check CLOUD.url / CLOUD.anonKey and that rsnexus-shared-state.sql has been run.<br><span style="color:#55657B;font-size:12px">${esc(cloudErr)}</span></div></div>`;
+  }
+}
+async function cloudPullOrSeed() {
+  const { data, error } = await sb.from('rsnexus_state').select('data').eq('id', 'main').maybeSingle();
+  if (error) throw error;
+  if (data && data.data && Array.isArray(data.data.leads)) { DB = data.data; VER++; }
+  else { DB = seedDB(); DB.settings = defaultSettings(); DB.notifications = buildNotifications(); const { error: e2 } = await sb.from('rsnexus_state').upsert({ id: 'main', data: DB }); if (e2) throw e2; }
+}
+function cloudSubscribe() {
+  sb.channel('rsnexus_state_live').on('postgres_changes', { event: '*', schema: 'public', table: 'rsnexus_state', filter: 'id=eq.main' }, payload => {
+    if (cloudSaving) return; const remote = payload.new && payload.new.data; if (!remote || !Array.isArray(remote.leads)) return;
+    DB = remote; VER++; scoreCache.clear(); riskCache.clear(); toast('Updated — another teammate made changes'); render();
+  }).subscribe();
+}
+window.cloudSave = debounce(async () => {
+  if (!sb) return; cloudSaving = true;
+  try { const { error } = await sb.from('rsnexus_state').upsert({ id: 'main', data: DB, updated_at: new Date().toISOString() }); if (error) console.error('Cloud save failed', error); }
+  catch (e) { console.error('Cloud save failed', e); }
+  setTimeout(() => cloudSaving = false, 500);
+}, 700);
+
+function matchCloudUser(email) {
+  const u = DB.users.find(x => (x.email || '').toLowerCase() === email.toLowerCase());
+  if (u) S.userId = u.id;
+  else { const nu = { id: uid('u'), name: email.split('@')[0], role: 'SALES', branch: 'EG', title: 'Team member', email, active: true }; DB.users.push(nu); S.userId = nu.id; audit('User provisioned', 'users', nu.id, email); persistNow(); }
+  savePrefs();
+}
+function cloudLoginHTML() {
+  return `<h2>${esc(t('sign_in', 'Sign in'))}</h2><p class="muted" style="margin:4px 0 16px">Sign in with your work email. Data is shared live with your team.</p>
+  <div class="field mb"><label>Email</label><input class="inp" id="cl_email" type="email" placeholder="you@rsholding.example" autocomplete="username"></div>
+  <div class="field mb"><label>Password</label><input class="inp" id="cl_pass" type="password" autocomplete="current-password"></div>
+  <button class="btn pri" style="width:100%;justify-content:center;padding:10px" data-act="cloudSignIn">${esc(t('sign_in', 'Sign in'))}${ic('arrow', 'sm')}</button>
+  <button class="btn" style="width:100%;justify-content:center;padding:10px;margin-top:8px" data-act="cloudSignUp">Create account</button>
+  <p class="xs faint" style="margin-top:14px">Company data is shared across everyone signed in. Company/customer/deal records are real once entered — enter real information carefully.</p>`;
+}
+ACT.cloudSignIn = async () => {
+  const email = $('#cl_email').value.trim(), pass = $('#cl_pass').value; if (!email || !pass) return toast('Enter email and password', 1);
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: pass }); if (error) return toast(error.message, 1);
+  matchCloudUser(data.user.email); audit('Login', 'auth', S.userId, cur().role); location.hash = '#/dashboard'; S.route = parseHash(); render(true);
+};
+ACT.cloudSignUp = async () => {
+  const email = $('#cl_email').value.trim(), pass = $('#cl_pass').value; if (!email || !pass) return toast('Enter email and password', 1); if (pass.length < 6) return toast('Password must be at least 6 characters', 1);
+  const { data, error } = await sb.auth.signUp({ email, password: pass }); if (error) return toast(error.message, 1);
+  if (data.session) { matchCloudUser(email); location.hash = '#/dashboard'; S.route = parseHash(); render(true); } else toast('Check your email to confirm your account, then sign in');
+};
+ACT.logout = async () => { if (sb) { try { await sb.auth.signOut(); } catch (e) { } } S.userId = null; savePrefs(); S.ui.menu = false; render(true); };
+boot();
 </script></body></html>
