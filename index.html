@@ -2194,7 +2194,9 @@ function init() {
  * simple and reliable for a small team. rsnexus-schema.sql has the fully normalized, per-table schema this
  * data model maps to, for a later migration to per-record Supabase queries and fine-grained RLS.
  */
-const CLOUD = { url: '', anonKey: '' };let sb = null, cloudSaving = false, cloudErr = '';
+const CLOUD = { url: '', anonKey: '' };
+const cloudOn = () => !!(CLOUD.url && CLOUD.anonKey);
+let sb = null, cloudSaving = false, cloudErr = '';
 
 function boot() { if (cloudOn()) cloudBoot(); else init(); }
 
